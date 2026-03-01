@@ -56,10 +56,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let showOverlay = items.first(where: { $0.name == "show" })?.value
 
             if let fileParam = items.first(where: { $0.name == "file" })?.value {
-                let fileURL = URL(fileURLWithPath: fileParam)
+                let fileURL = URL(fileURLWithPath: fileParam).standardized
+                // Only open plaintext files via URL scheme
+                guard fileURL.pathExtension.lowercased() == "txt" else { return }
                 windowFactory.ensureWindow(fileURL: fileURL, folderURL: fileURL.deletingLastPathComponent(), launchOverlay: showOverlay, delegate: self)
             } else if let folderParam = items.first(where: { $0.name == "folder" })?.value {
-                let folderURL = URL(fileURLWithPath: folderParam)
+                let folderURL = URL(fileURLWithPath: folderParam).standardized
                 windowFactory.ensureWindow(folderURL: folderURL, launchOverlay: showOverlay, delegate: self)
             } else if showOverlay != nil {
                 windowFactory.ensureWindow(launchOverlay: showOverlay, delegate: self)

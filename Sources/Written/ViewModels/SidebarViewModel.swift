@@ -63,6 +63,7 @@ final class SidebarViewModel: ObservableObject {
     // MARK: - File Operations
 
     func renameFile(at url: URL, to newName: String) -> URL? {
+        guard !newName.contains("/"), !newName.contains("..") else { return nil }
         let fm = FileManager.default
         let newURL = url.deletingLastPathComponent().appendingPathComponent(newName)
         guard !fm.fileExists(atPath: newURL.path) else { return nil }

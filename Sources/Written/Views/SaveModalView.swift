@@ -190,6 +190,10 @@ struct SaveModalView: View {
             errorMessage = "Filename cannot be empty"
             return
         }
+        guard !trimmed.contains("/"), !trimmed.contains("..") else {
+            errorMessage = "Invalid filename"
+            return
+        }
 
         let expandedPath = (directoryPath as NSString).expandingTildeInPath
         let dirURL = URL(fileURLWithPath: expandedPath, isDirectory: true)
@@ -286,6 +290,10 @@ struct NewFileNameView: View {
         let trimmed = filename.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else {
             errorMessage = "Filename cannot be empty"
+            return
+        }
+        guard !trimmed.contains("/"), !trimmed.contains("..") else {
+            errorMessage = "Invalid filename"
             return
         }
 

@@ -24,6 +24,13 @@ func resolveToAbsolute(_ path: String) -> String {
     return (absolute as NSString).standardizingPath
 }
 
+// URL-encode for use as a query parameter value (encodes &, =, #, + which urlQueryAllowed does not)
+func encodeQueryValue(_ value: String) -> String {
+    var allowed = CharacterSet.urlQueryAllowed
+    allowed.remove(charactersIn: "&=+#")
+    return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+}
+
 let process = Process()
 process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
 
@@ -34,7 +41,7 @@ if let arg = arg {
 
     if exists && isDir.boolValue {
         // It's a directory — open with sidebar
-        let encoded = resolved.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? resolved
+        let encoded = encodeQueryValue(resolved)
         let urlString = "written://open?folder=\(encoded)"
         process.arguments = [urlString]
     } else {
@@ -56,13 +63,13 @@ if let arg = arg {
             FileManager.default.createFile(atPath: filePath, contents: nil)
         }
 
-        let encoded = filePath.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? filePath
+        let encoded = encodeQueryValue(filePath)
         let urlString = "written://open?file=\(encoded)"
         process.arguments = [urlString]
     }
 } else {
     // No args — open sidebar in current directory
-    let encoded = cwd.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? cwd
+    let encoded = encodeQueryValue(cwd)
     let urlString = "written://open?folder=\(encoded)"
     process.arguments = [urlString]
 }
