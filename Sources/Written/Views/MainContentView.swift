@@ -37,12 +37,22 @@ struct MainContentView: View {
     @State private var updateAvailable: UpdateChecker.Update?
     @State private var edgeHovering = false
     @State private var sidebarButtonHovered = false
+    @State private var showExternalChangeAlert = false
+    @State private var externalChangeFileURL: URL?
+    @State private var externalChangeDiskText: String?
+    @State private var showQuitConfirmation = false
+    @State private var quitDirtySummaries: [EditorViewModel.DirtyFileSummary] = []
+    @State private var fileErrorTitle: String = "Error"
+    @State private var fileErrorMessage: String?
+    @FocusState private var quitConfirmFocused: Bool
+    @FocusState private var fileErrorFocused: Bool
+    @FocusState private var externalChangeFocused: Bool
     @FocusState private var sidebarFocused: Bool
     @FocusState private var sidebarFilterFocused: Bool
     let onOpenFolder: () -> Void
 
-    private var overlayActive: Bool { sidebarVisible || settingsVisible || showSavedFlash || saveModalState != nil || showNewFilePrompt }
-    private var modalOverlayActive: Bool { settingsVisible || showWelcomeHelp || showTutorial || showTutorialFlash || saveModalState != nil || showNewFilePrompt }
+    private var overlayActive: Bool { sidebarVisible || settingsVisible || showSavedFlash || saveModalState != nil || showNewFilePrompt || fileErrorMessage != nil }
+    private var modalOverlayActive: Bool { settingsVisible || showWelcomeHelp || showTutorial || showTutorialFlash || saveModalState != nil || showNewFilePrompt || fileErrorMessage != nil }
 
     /// Whether the sidebar is in a modal sub-state (rename, delete, help) where normal nav keys should be suppressed.
     private var sidebarModal: Bool { renamingNodeURL != nil || deletingNodeURL != nil || showSidebarHelp || sidebarFilterFocused }
@@ -326,77 +336,27 @@ struct MainContentView: View {
 
                 // Update available banner
                 if let update = updateAvailable {
-                    VStack {
-                        Spacer()
-                        Button(action: {
-                            NSWorkspace.shared.open(update.url)
-                        }) {
-                            Text("Written v\(update.version) available")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(Color(nsColor: settings.currentTheme.textColor).opacity(0.5))
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 7)
-                                .background(
-                                    Capsule()
-                                        .fill(Color(nsColor: settings.currentTheme.textColor).opacity(0.06))
-                                        .overlay(
-                                            Capsule()
-                                                .strokeBorder(Color(nsColor: settings.currentTheme.textColor).opacity(0.1), lineWidth: 0.5)
-                                        )
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .onHover { hovering in
-                            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-                        }
-                        .padding(.bottom, 16)
-                    }
-                    .transition(.opacity)
-                    .allowsHitTesting(true)
+                    updateBannerView(update)
+                }
+
+                // External file change alert
+                if showExternalChangeAlert {
+                    externalChangeAlertView
+                }
+
+                // Quit confirmation modal
+                if showQuitConfirmation {
+                    quitConfirmationView
+                }
+
+                // Save error modal
+                if fileErrorMessage != nil {
+                    fileErrorView
                 }
 
                 // Save / Close confirmation modals
-                if let state = saveModalState {
-                    Color.black.opacity(0.01)
-                        .ignoresSafeArea()
-                        .onTapGesture { saveModalState = nil; refocusAfterModal() }
-
-                    switch state {
-                    case .closeConfirm:
-                        CloseConfirmationView(
-                            onSave: { saveModalState = .closeAndSave },
-                            onDiscard: {
-                                saveModalState = nil
-                                viewModel.cleanupTempFile()
-                                viewModel.document = WrittenDocument()
-                                withAnimation(.easeInOut(duration: 0.3)) {
-                                    windowMode = .welcome
-                                    sidebarVisible = false
-                                }
-                                updateWindowTitle()
-                            },
-                            onCancel: { saveModalState = nil; refocusAfterModal() }
-                        )
-                        .transition(.opacity)
-
-                    case .save, .closeAndSave:
-                        let defaultDir = viewModel.folderURL
-                            ?? URL(fileURLWithPath: NSHomeDirectory() + "/Documents", isDirectory: true)
-                        let stem = viewModel.document.fileURL?.deletingPathExtension().lastPathComponent ?? "Untitled"
-
-                        SaveModalView(
-                            initialFilename: stem,
-                            directoryURL: defaultDir,
-                            onSave: { url in completeSave(url: url, thenClose: state == .closeAndSave) },
-                            onCancel: { saveModalState = nil; refocusAfterModal() },
-                            onSystemSave: {
-                                let thenClose = state == .closeAndSave
-                                saveModalState = nil
-                                openSystemSavePanel(thenClose: thenClose)
-                            }
-                        )
-                        .transition(.opacity)
-                    }
+                if saveModalState != nil {
+                    saveModalOverlay
                 }
 
                 // New file name prompt
@@ -409,7 +369,10 @@ struct MainContentView: View {
                         directoryURL: folderURL,
                         onCreate: { url in
                             showNewFilePrompt = false
-                            FileManager.default.createFile(atPath: url.path, contents: nil)
+                            guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
+                                showFileError(title: "Could Not Create File", message: "Check folder permissions")
+                                return
+                            }
                             sidebarVM.refresh()
                             loadFile(url)
                         },
@@ -424,6 +387,7 @@ struct MainContentView: View {
             .animation(.easeInOut(duration: 0.15), value: showTutorialFlash)
             .animation(.easeInOut(duration: 0.2), value: saveModalState)
             .animation(.easeInOut(duration: 0.2), value: showNewFilePrompt)
+            .animation(.easeInOut(duration: 0.2), value: fileErrorMessage != nil)
             .animation(.easeInOut(duration: 0.3), value: updateAvailable != nil)
         }
         .onAppear {
@@ -449,105 +413,118 @@ struct MainContentView: View {
                 }
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .toggleSidebar)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .toggleSidebar)) { _ in handleToggleSidebar() }
+        .onReceive(NotificationCenter.default.publisher(for: .folderSelected)) { n in handleFolderSelected(n) }
+        .onReceive(NotificationCenter.default.publisher(for: .openFileInWindow)) { n in handleOpenFileInWindow(n) }
+        .onReceive(NotificationCenter.default.publisher(for: .newDocument)) { _ in if !modalOverlayActive { newDocument() } }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleSettings)) { _ in handleToggleSettings() }
+        .onReceive(NotificationCenter.default.publisher(for: .settingsClosed)) { _ in if settingsVisible { dismissSettings() } }
+        .onReceive(NotificationCenter.default.publisher(for: .saveDocument)) { _ in if !modalOverlayActive { saveCurrentDocument() } }
+        .onReceive(NotificationCenter.default.publisher(for: .closeAction)) { _ in handleCloseAction() }
+        .onReceive(NotificationCenter.default.publisher(for: .showOverlay)) { n in handleShowOverlay(n) }
+        .onReceive(NotificationCenter.default.publisher(for: .showWelcomeHelp)) { _ in if !showWelcomeHelp { showWelcomeHelp = true } }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willEnterFullScreenNotification)) { _ in isFullscreen = true }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in isFullscreen = false }
+        .onReceive(NotificationCenter.default.publisher(for: .externalFileChange)) { n in handleExternalFileChange(n) }
+        .onReceive(NotificationCenter.default.publisher(for: .showQuitConfirmation)) { _ in handleShowQuitConfirmation() }
+        .onChange(of: edgeHovering) { handleEdgeHover() }
+        .onChange(of: editorNeedsFocus) { handleEditorFocusChange() }
+        .onChange(of: viewModel.isDirty) { updateWindowTitle() }
+    }
+
+    // MARK: - Notification Handlers
+
+    private func handleToggleSidebar() {
+        guard !modalOverlayActive else { return }
+        guard windowMode == .editor else { return }
+        let wasVisible = sidebarVisible
+        withAnimation(.easeInOut(duration: 0.2)) {
+            sidebarVisible.toggle()
+            if !sidebarVisible { dismissSidebarModals() }
+        }
+        if wasVisible && !sidebarVisible { editorNeedsFocus = true }
+    }
+
+    private func handleFolderSelected(_ notification: Notification) {
+        guard !modalOverlayActive else { return }
+        if let url = notification.object as? URL {
+            RecentItemsService.shared.add(url: url)
+            viewModel.folderURL = url
+            if let errorMsg = sidebarVM.loadFolder(url) {
+                showFileError(title: "Could Not Open Folder", message: errorMsg)
+                return
+            }
+            withAnimation(.easeInOut(duration: 0.3)) {
+                windowMode = .editor
+                sidebarVisible = true
+            }
+            preselectCurrentFile()
+            updateWindowTitle()
+        }
+    }
+
+    private func handleOpenFileInWindow(_ notification: Notification) {
+        guard !modalOverlayActive else { return }
+        if let url = notification.object as? URL {
+            RecentItemsService.shared.add(url: url)
+            loadFile(url)
+            let parentDir = url.deletingLastPathComponent()
+            viewModel.folderURL = parentDir
+            sidebarVM.loadFolder(parentDir)
+            withAnimation(.easeInOut(duration: 0.3)) { windowMode = .editor }
+        }
+    }
+
+    private func handleToggleSettings() {
+        if settingsVisible {
+            dismissSettings()
+        } else {
             guard !modalOverlayActive else { return }
-            guard windowMode == .editor else { return }
-            let wasVisible = sidebarVisible
-            withAnimation(.easeInOut(duration: 0.2)) {
-                sidebarVisible.toggle()
-                if !sidebarVisible {
-                    dismissSidebarModals()
+            focusReturnTarget = currentFocusTarget
+            settingsVisible = true
+        }
+    }
+
+    private func handleShowOverlay(_ notification: Notification) {
+        if let mode = notification.object as? String {
+            if mode == "tutorial" { showTutorial = true }
+            else if mode == "help" { showWelcomeHelp = true }
+        }
+    }
+
+    private func handleExternalFileChange(_ notification: Notification) {
+        guard let info = notification.userInfo,
+              let fileURL = info["fileURL"] as? URL,
+              let diskText = info["diskText"] as? String,
+              fileURL == viewModel.document.fileURL
+        else { return }
+        externalChangeFileURL = fileURL
+        externalChangeDiskText = diskText
+        showExternalChangeAlert = true
+    }
+
+    private func handleEdgeHover() {
+        if edgeHovering && settings.showSidebarButton {
+            Task {
+                try? await Task.sleep(for: .milliseconds(400))
+                if edgeHovering && !sidebarVisible && !overlayActive && settings.showSidebarButton {
+                    withAnimation(.easeInOut(duration: 0.2)) { sidebarVisible = true }
                 }
             }
-            if wasVisible && !sidebarVisible {
-                editorNeedsFocus = true
+        }
+    }
+
+    private func handleShowQuitConfirmation() {
+        quitDirtySummaries = viewModel.dirtyFileSummaries()
+        showQuitConfirmation = true
+    }
+
+    private func handleEditorFocusChange() {
+        if editorNeedsFocus {
+            editorNeedsFocus = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                NotificationCenter.default.post(name: .focusEditor, object: nil)
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .folderSelected)) { notification in
-            guard !modalOverlayActive else { return }
-            if let url = notification.object as? URL {
-                RecentItemsService.shared.add(url: url)
-                viewModel.folderURL = url
-                sidebarVM.loadFolder(url)
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    windowMode = .editor
-                    sidebarVisible = true
-                }
-                preselectCurrentFile()
-                updateWindowTitle()
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .openFileInWindow)) { notification in
-            guard !modalOverlayActive else { return }
-            if let url = notification.object as? URL {
-                RecentItemsService.shared.add(url: url)
-                loadFile(url)
-                let parentDir = url.deletingLastPathComponent()
-                viewModel.folderURL = parentDir
-                sidebarVM.loadFolder(parentDir)
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    windowMode = .editor
-                }
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .newDocument)) { _ in
-            guard !modalOverlayActive else { return }
-            newDocument()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .toggleSettings)) { _ in
-            if settingsVisible {
-                dismissSettings()
-            } else {
-                guard !modalOverlayActive else { return }
-                focusReturnTarget = currentFocusTarget
-                settingsVisible = true
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .settingsClosed)) { _ in
-            if settingsVisible { dismissSettings() }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .saveDocument)) { _ in
-            guard !modalOverlayActive else { return }
-            saveCurrentDocument()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .closeAction)) { _ in
-            handleCloseAction()
-        }
-        .onChange(of: edgeHovering) {
-            if edgeHovering && settings.showSidebarButton {
-                Task {
-                    try? await Task.sleep(for: .milliseconds(400))
-                    if edgeHovering && !sidebarVisible && !overlayActive && settings.showSidebarButton {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            sidebarVisible = true
-                        }
-                    }
-                }
-            }
-        }
-        .onChange(of: editorNeedsFocus) {
-            if editorNeedsFocus {
-                editorNeedsFocus = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    NotificationCenter.default.post(name: .focusEditor, object: nil)
-                }
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .showOverlay)) { notification in
-            if let mode = notification.object as? String {
-                if mode == "tutorial" { showTutorial = true }
-                else if mode == "help" { showWelcomeHelp = true }
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .showWelcomeHelp)) { _ in
-            guard !showWelcomeHelp else { return }
-            showWelcomeHelp = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willEnterFullScreenNotification)) { _ in
-            isFullscreen = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in
-            isFullscreen = false
         }
     }
 
@@ -597,14 +574,15 @@ struct MainContentView: View {
     }
 
     private func commitRename(url: URL, newName: String) {
-        guard let newURL = sidebarVM.renameFile(at: url, to: newName) else {
-            renamingNodeURL = nil
-            refocusSidebar()
-            return
-        }
-        if viewModel.document.fileURL == url {
-            viewModel.document.fileURL = newURL
-            updateWindowTitle()
+        let result = sidebarVM.renameFile(at: url, to: newName)
+        if let newURL = result.url {
+            viewModel.migrateBuffer(from: url, to: newURL)
+            if viewModel.document.fileURL == url {
+                viewModel.document.fileURL = newURL
+                updateWindowTitle()
+            }
+        } else if let msg = result.error {
+            showFileError(title: "Rename Failed", message: msg)
         }
         renamingNodeURL = nil
         refocusSidebar()
@@ -633,7 +611,12 @@ struct MainContentView: View {
             }
         }
 
-        sidebarVM.deleteFile(at: url)
+        if let errorMsg = sidebarVM.deleteFile(at: url) {
+            deletingNodeURL = nil
+            showFileError(title: "Delete Failed", message: errorMsg)
+            return
+        }
+        viewModel.discardBuffer(for: url)
         deletingNodeURL = nil
 
         if wasOpen {
@@ -748,23 +731,24 @@ struct MainContentView: View {
         let hasFileURL = viewModel.document.fileURL != nil
         let hasContent = !viewModel.document.text.isEmpty
 
-        if hasFileURL {
-            viewModel.saveImmediately()
-            withAnimation(.easeInOut(duration: 0.15)) {
-                showSavedFlash = true
+        if hasFileURL && viewModel.isDirty {
+            // Dirty named file — prompt save/discard/cancel
+            saveModalState = .closeConfirm
+        } else if hasFileURL {
+            // Clean named file — close without prompt
+            viewModel.discardChanges()
+            viewModel.document = WrittenDocument()
+            withAnimation(.easeInOut(duration: 0.3)) {
+                windowMode = .welcome
+                sidebarVisible = false
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                viewModel.document = WrittenDocument()
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    showSavedFlash = false
-                    windowMode = .welcome
-                    sidebarVisible = false
-                }
-                updateWindowTitle()
-            }
+            updateWindowTitle()
         } else if hasContent {
+            // Untitled with content — prompt
             saveModalState = .closeConfirm
         } else {
+            // Empty untitled — just close
+            viewModel.discardUntitled()
             viewModel.document = WrittenDocument()
             withAnimation(.easeInOut(duration: 0.3)) {
                 windowMode = .welcome
@@ -789,6 +773,323 @@ struct MainContentView: View {
             }
             Spacer()
         }
+    }
+
+    // MARK: - Update Banner
+
+    @ViewBuilder
+    private func updateBannerView(_ update: UpdateChecker.Update) -> some View {
+        VStack {
+            Spacer()
+            Button(action: {
+                NSWorkspace.shared.open(update.url)
+            }) {
+                Text("Written v\(update.version) available")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color(nsColor: settings.currentTheme.textColor).opacity(0.5))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 7)
+                    .background(
+                        Capsule()
+                            .fill(Color(nsColor: settings.currentTheme.textColor).opacity(0.06))
+                            .overlay(
+                                Capsule()
+                                    .strokeBorder(Color(nsColor: settings.currentTheme.textColor).opacity(0.1), lineWidth: 0.5)
+                            )
+                    )
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering in
+                if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+            .padding(.bottom, 16)
+        }
+        .transition(.opacity)
+        .allowsHitTesting(true)
+    }
+
+    // MARK: - Save Modal Overlay
+
+    @ViewBuilder
+    private var saveModalOverlay: some View {
+        Color.black.opacity(0.01)
+            .ignoresSafeArea()
+            .onTapGesture { saveModalState = nil; refocusAfterModal() }
+
+        if let state = saveModalState {
+            switch state {
+            case .closeConfirm:
+                CloseConfirmationView(
+                    onSave: { handleCloseConfirmSave() },
+                    onDiscard: { handleCloseConfirmDiscard() },
+                    onCancel: { saveModalState = nil; refocusAfterModal() }
+                )
+                .transition(.opacity)
+
+            case .save, .closeAndSave:
+                let defaultDir = viewModel.folderURL
+                    ?? URL(fileURLWithPath: NSHomeDirectory() + "/Documents", isDirectory: true)
+                let stem = viewModel.document.fileURL?.deletingPathExtension().lastPathComponent ?? "Untitled"
+
+                SaveModalView(
+                    initialFilename: stem,
+                    directoryURL: defaultDir,
+                    onSave: { url in completeSave(url: url, thenClose: state == .closeAndSave) },
+                    onCancel: { saveModalState = nil; refocusAfterModal() },
+                    onSystemSave: {
+                        let thenClose = state == .closeAndSave
+                        saveModalState = nil
+                        openSystemSavePanel(thenClose: thenClose)
+                    }
+                )
+                .transition(.opacity)
+            }
+        }
+    }
+
+    private func handleCloseConfirmSave() {
+        if viewModel.document.fileURL != nil {
+            let currentText = viewModel.flushEditorText?() ?? viewModel.document.text
+            viewModel.textDidChange(currentText)
+            do {
+                try viewModel.saveToRealFile()
+            } catch {
+                saveModalState = nil
+                showFileError(title: "Save Failed", message: error.localizedDescription)
+                return
+            }
+            saveModalState = nil
+            viewModel.document = WrittenDocument()
+            withAnimation(.easeInOut(duration: 0.3)) {
+                windowMode = .welcome
+                sidebarVisible = false
+            }
+            updateWindowTitle()
+        } else {
+            saveModalState = .closeAndSave
+        }
+    }
+
+    private func handleCloseConfirmDiscard() {
+        saveModalState = nil
+        if viewModel.document.fileURL != nil {
+            viewModel.discardChanges()
+        } else {
+            viewModel.discardUntitled()
+        }
+        viewModel.document = WrittenDocument()
+        withAnimation(.easeInOut(duration: 0.3)) {
+            windowMode = .welcome
+            sidebarVisible = false
+        }
+        updateWindowTitle()
+    }
+
+    // MARK: - Quit Confirmation
+
+    @ViewBuilder
+    private var quitConfirmationView: some View {
+        Color.black.opacity(0.01)
+            .ignoresSafeArea()
+
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Unsaved changes")
+                .font(.system(size: 16, weight: .medium))
+
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(quitDirtySummaries) { file in
+                    HStack(spacing: 8) {
+                        Text(file.name)
+                            .font(.system(size: 13, design: .monospaced))
+                            .lineLimit(1)
+
+                        Spacer()
+
+                        Text("\(file.wordCount)w")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+
+                        if file.wordDelta != 0 {
+                            let sign = file.wordDelta > 0 ? "+" : ""
+                            Text("\(sign)\(file.wordDelta)")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(file.wordDelta > 0 ? .green.opacity(0.8) : .red.opacity(0.8))
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.primary.opacity(0.04))
+            )
+
+            HStack(spacing: 12) {
+                modalButton("s", label: "save all", action: {
+                    showQuitConfirmation = false
+                    NotificationCenter.default.post(name: .quitConfirmSave, object: nil)
+                })
+                modalButton("d", label: "discard", action: {
+                    showQuitConfirmation = false
+                    NotificationCenter.default.post(name: .quitConfirmDiscard, object: nil)
+                })
+                modalButton("Esc", label: "cancel", action: {
+                    showQuitConfirmation = false
+                    refocusAfterModal()
+                })
+            }
+        }
+        .padding(24)
+        .frame(width: 360)
+        .modifier(SaveModalGlassModifier())
+        .focusable()
+        .focusEffectDisabled()
+        .focused($quitConfirmFocused)
+        .onKeyPress(phases: .down) { press in
+            switch press.key {
+            case "s":
+                showQuitConfirmation = false
+                NotificationCenter.default.post(name: .quitConfirmSave, object: nil)
+                return .handled
+            case "d":
+                showQuitConfirmation = false
+                NotificationCenter.default.post(name: .quitConfirmDiscard, object: nil)
+                return .handled
+            case .escape:
+                showQuitConfirmation = false
+                refocusAfterModal()
+                return .handled
+            default:
+                return .handled
+            }
+        }
+        .onAppear {
+            NotificationCenter.default.post(name: .unfocusEditor, object: nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                quitConfirmFocused = true
+            }
+        }
+        .transition(.opacity)
+    }
+
+    // MARK: - Save Error
+
+    @ViewBuilder
+    private var fileErrorView: some View {
+        Color.black.opacity(0.01)
+            .ignoresSafeArea()
+
+        VStack(alignment: .leading, spacing: 16) {
+            Text(fileErrorTitle)
+                .font(.system(size: 16, weight: .medium))
+
+            if let msg = fileErrorMessage {
+                Text(msg)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            HStack(spacing: 12) {
+                modalButton("Esc", label: "ok", action: { dismissFileError() })
+            }
+        }
+        .padding(24)
+        .frame(width: 360)
+        .modifier(SaveModalGlassModifier())
+        .focusable()
+        .focusEffectDisabled()
+        .focused($fileErrorFocused)
+        .onKeyPress(phases: .down) { press in
+            switch press.key {
+            case .escape, .return:
+                dismissFileError()
+                return .handled
+            default:
+                return .handled
+            }
+        }
+        .onAppear {
+            NotificationCenter.default.post(name: .unfocusEditor, object: nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                fileErrorFocused = true
+            }
+        }
+        .transition(.opacity)
+    }
+
+    private func dismissFileError() {
+        fileErrorMessage = nil
+        restoreFocus(focusReturnTarget)
+    }
+
+    /// Show the file error modal with proper focus capture.
+    private func showFileError(title: String, message: String) {
+        focusReturnTarget = currentFocusTarget
+        fileErrorTitle = title
+        fileErrorMessage = message
+    }
+
+    // MARK: - External Change Alert
+
+    @ViewBuilder
+    private var externalChangeAlertView: some View {
+        Color.black.opacity(0.01)
+            .ignoresSafeArea()
+
+        VStack(alignment: .leading, spacing: 16) {
+            Text("File changed on disk")
+                .font(.system(size: 16, weight: .medium))
+
+            Text("This file was modified by another program.")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 12) {
+                modalButton("r", label: "reload", action: {
+                    showExternalChangeAlert = false
+                    try? viewModel.reloadFromDisk()
+                    updateWindowTitle()
+                })
+                modalButton("k", label: "keep mine", action: {
+                    showExternalChangeAlert = false
+                    viewModel.keepCurrentVersion()
+                })
+            }
+        }
+        .padding(24)
+        .frame(width: 360)
+        .modifier(SaveModalGlassModifier())
+        .focusable()
+        .focusEffectDisabled()
+        .focused($externalChangeFocused)
+        .onKeyPress(phases: .down) { press in
+            switch press.key {
+            case "r":
+                showExternalChangeAlert = false
+                try? viewModel.reloadFromDisk()
+                updateWindowTitle()
+                return .handled
+            case "k":
+                showExternalChangeAlert = false
+                viewModel.keepCurrentVersion()
+                return .handled
+            case .escape:
+                showExternalChangeAlert = false
+                viewModel.keepCurrentVersion()
+                return .handled
+            default:
+                return .handled
+            }
+        }
+        .onAppear {
+            NotificationCenter.default.post(name: .unfocusEditor, object: nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                externalChangeFocused = true
+            }
+        }
+        .transition(.opacity)
     }
 
     // MARK: - Helpers
@@ -821,15 +1122,15 @@ struct MainContentView: View {
     }
 
     private func loadFile(_ url: URL) {
-        // Flush any debounced text so the current file is saved before switching
-        NotificationCenter.default.post(name: .flushEditorText, object: nil)
-        viewModel.saveCursorPosition()
+        // Synchronous flush — fixes the race condition with async notifications
+        let currentText = viewModel.flushEditorText?() ?? viewModel.document.text
+        viewModel.flushAndStashCurrentBuffer(currentText: currentText)
+
         do {
-            let doc = try WrittenDocument.load(from: url)
-            viewModel.document = doc
-            viewModel.restoreCursorPosition(for: url)
+            try viewModel.loadFile(url)
         } catch {
-            print("Failed to open file: \(error)")
+            showFileError(title: "Could Not Open File", message: error.localizedDescription)
+            return
         }
         let parentDir = url.deletingLastPathComponent()
         if viewModel.folderURL != parentDir {
@@ -846,7 +1147,19 @@ struct MainContentView: View {
 
     private func saveCurrentDocument() {
         if viewModel.document.fileURL != nil {
-            viewModel.saveImmediately()
+            // Flush text from editor before saving
+            let currentText = viewModel.flushEditorText?() ?? viewModel.document.text
+            viewModel.textDidChange(currentText)
+            do {
+                try viewModel.saveToRealFile()
+                withAnimation(.easeInOut(duration: 0.15)) { showSavedFlash = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    withAnimation(.easeInOut(duration: 0.15)) { showSavedFlash = false }
+                }
+            } catch {
+                showFileError(title: "Save Failed", message: error.localizedDescription)
+            }
+            updateWindowTitle()
             return
         }
         saveModalState = .save
@@ -855,7 +1168,12 @@ struct MainContentView: View {
     private func completeSave(url: URL, thenClose: Bool) {
         saveModalState = nil
         viewModel.assignFile(url: url)
-        viewModel.saveImmediately()
+        do {
+            try viewModel.saveToRealFile()
+        } catch {
+            showFileError(title: "Save Failed", message: error.localizedDescription)
+            return
+        }
         RecentItemsService.shared.add(url: url)
         let parentDir = url.deletingLastPathComponent()
         viewModel.folderURL = parentDir
@@ -921,13 +1239,21 @@ struct MainContentView: View {
         RecentItemsService.shared.add(url: url)
         if item.isDirectory {
             viewModel.folderURL = url
-            sidebarVM.loadFolder(url)
+            if let errorMsg = sidebarVM.loadFolder(url) {
+                showFileError(title: "Could Not Open Folder", message: errorMsg)
+                return
+            }
             withAnimation(.easeInOut(duration: 0.3)) {
                 windowMode = .editor
                 sidebarVisible = true
             }
             updateWindowTitle()
         } else {
+            // Check readability before transitioning to editor mode
+            guard FileManager.default.isReadableFile(atPath: url.path) else {
+                showFileError(title: "Could Not Open File", message: "Check file permissions")
+                return
+            }
             withAnimation(.easeInOut(duration: 0.3)) {
                 windowMode = .editor
             }
@@ -1009,4 +1335,9 @@ extension Notification.Name {
     static let showOverlay = Notification.Name("showOverlay")
     static let flushEditorText = Notification.Name("flushEditorText")
     static let showWelcomeHelp = Notification.Name("showWelcomeHelp")
+    static let externalFileChange = Notification.Name("externalFileChange")
+    static let documentDirtyChanged = Notification.Name("documentDirtyChanged")
+    static let showQuitConfirmation = Notification.Name("showQuitConfirmation")
+    static let quitConfirmSave = Notification.Name("quitConfirmSave")
+    static let quitConfirmDiscard = Notification.Name("quitConfirmDiscard")
 }

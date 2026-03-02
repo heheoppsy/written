@@ -37,16 +37,26 @@ final class SidebarViewModel: ObservableObject {
         hiddenDirCount = 0
     }
 
-    func loadFolder(_ url: URL) {
+    /// Load a folder for the sidebar. Returns an error message if the folder can't be read.
+    @discardableResult
+    func loadFolder(_ url: URL) -> String? {
         folderURL = url
         hiddenFileCount = 0
         hiddenDirCount = 0
+
+        guard FileManager.default.isReadableFile(atPath: url.path) else {
+            rootNodes = []
+            return "Cannot read folder — check permissions"
+        }
+
         rootNodes = scanFolder(url)
+        return nil
     }
 
-    func refresh() {
-        guard let url = folderURL else { return }
-        loadFolder(url)
+    @discardableResult
+    func refresh() -> String? {
+        guard let url = folderURL else { return nil }
+        return loadFolder(url)
     }
 
     /// Flat list of all files (used for navigation and Cmd+1-9 shortcuts).
@@ -62,28 +72,33 @@ final class SidebarViewModel: ObservableObject {
 
     // MARK: - File Operations
 
-    func renameFile(at url: URL, to newName: String) -> URL? {
-        guard !newName.contains("/"), !newName.contains("..") else { return nil }
+    /// Rename a file. Returns (newURL, nil) on success, (nil, errorMessage) on failure.
+    func renameFile(at url: URL, to newName: String) -> (url: URL?, error: String?) {
+        guard !newName.contains("/"), !newName.contains("..") else {
+            return (nil, "Invalid filename")
+        }
         let fm = FileManager.default
         let newURL = url.deletingLastPathComponent().appendingPathComponent(newName)
-        guard !fm.fileExists(atPath: newURL.path) else { return nil }
+        guard !fm.fileExists(atPath: newURL.path) else {
+            return (nil, "A file named \"\(newName)\" already exists")
+        }
         do {
             try fm.moveItem(at: url, to: newURL)
             refresh()
-            return newURL
+            return (newURL, nil)
         } catch {
-            print("Rename failed: \(error)")
-            return nil
+            return (nil, error.localizedDescription)
         }
     }
 
-    func deleteFile(at url: URL) {
-        let fm = FileManager.default
+    /// Delete a file to Trash. Returns an error message on failure, nil on success.
+    func deleteFile(at url: URL) -> String? {
         do {
-            try fm.trashItem(at: url, resultingItemURL: nil)
+            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
             refresh()
+            return nil
         } catch {
-            print("Delete failed: \(error)")
+            return error.localizedDescription
         }
     }
 
@@ -99,7 +114,9 @@ final class SidebarViewModel: ObservableObject {
             url = folder.appendingPathComponent("\(baseName) \(counter).\(ext)")
             counter += 1
         }
-        FileManager.default.createFile(atPath: url.path, contents: nil)
+        guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
+            return nil
+        }
         refresh()
         return url
     }

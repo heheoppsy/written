@@ -60,7 +60,10 @@ if let arg = arg {
                 // No extension on new file — append .txt
                 filePath = resolved + ".txt"
             }
-            FileManager.default.createFile(atPath: filePath, contents: nil)
+            guard FileManager.default.createFile(atPath: filePath, contents: nil) else {
+                fputs("error: could not create \(filePath) — check permissions\n", stderr)
+                exit(1)
+            }
         }
 
         let encoded = encodeQueryValue(filePath)

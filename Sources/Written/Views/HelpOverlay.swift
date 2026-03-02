@@ -361,25 +361,27 @@ struct WelcomeHelpView: View {
     private func moveToApplications() {
         let currentPath = Bundle.main.bundlePath
         let appName = (currentPath as NSString).lastPathComponent
-        let dest = "/Applications/\(appName)"
+        let destURL = URL(fileURLWithPath: "/Applications/\(appName)")
+        let sourceURL = URL(fileURLWithPath: currentPath)
 
         do {
-            if FileManager.default.fileExists(atPath: dest) {
-                try FileManager.default.removeItem(atPath: dest)
+            let fm = FileManager.default
+            if fm.fileExists(atPath: destURL.path) {
+                _ = try fm.replaceItemAt(destURL, withItemAt: sourceURL)
+            } else {
+                try fm.moveItem(at: sourceURL, to: destURL)
             }
-            try FileManager.default.moveItem(atPath: currentPath, toPath: dest)
-            relaunchFromApplications(appPath: dest, show: "help")
+            relaunchFromApplications(appPath: destURL.path, show: "help")
         } catch {
             // Silently fail — user can drag manually
         }
     }
 
     private func relaunchFromApplications(appPath: String, show: String) {
-        let escaped = appPath.replacingOccurrences(of: "'", with: "'\\''")
-        let script = "sleep 1 && open '\(escaped)' --args --show \(show)"
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", script]
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", "sleep 1 && exec \"$0\" \"$@\"",
+                             "/usr/bin/open", appPath, "--args", "--show", show]
         try? process.run()
         NSApp.terminate(nil)
     }
@@ -393,22 +395,43 @@ struct WelcomeHelpView: View {
         }
         let cliSource = execURL.deletingLastPathComponent().appendingPathComponent("WrittenCLI").path
 
+        guard cliSource.hasPrefix(Bundle.main.bundlePath + "/") else {
+            cliError = "CLI binary path outside app bundle"
+            return
+        }
+
         guard FileManager.default.fileExists(atPath: cliSource) else {
             cliError = "WrittenCLI binary not found"
             return
         }
 
-        let escapedSource = cliSource.replacingOccurrences(of: "'", with: "'\\''")
-        let script = "do shell script \"mkdir -p /usr/local/bin && cp '\(escapedSource)' /usr/local/bin/written && chmod +x /usr/local/bin/written\" with administrator privileges"
+        let tempDir = FileManager.default.temporaryDirectory
+        let osaURL = tempDir.appendingPathComponent("written-install-cli.applescript")
+
+        let asEscaped = cliSource
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let osaScript = """
+        set src to "\(asEscaped)"
+        do shell script "mkdir -p /usr/local/bin && cp " & quoted form of src & " /usr/local/bin/written && chmod +x /usr/local/bin/written" with administrator privileges
+        """
+
+        do {
+            try osaScript.write(to: osaURL, atomically: true, encoding: .utf8)
+        } catch {
+            cliError = "Failed to prepare installer"
+            return
+        }
 
         DispatchQueue.global(qos: .userInitiated).async {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            process.arguments = ["-e", script]
+            process.arguments = [osaURL.path]
 
             do {
                 try process.run()
                 process.waitUntilExit()
+                try? FileManager.default.removeItem(at: osaURL)
 
                 DispatchQueue.main.async {
                     if process.terminationStatus == 0 {
@@ -418,6 +441,7 @@ struct WelcomeHelpView: View {
                     }
                 }
             } catch {
+                try? FileManager.default.removeItem(at: osaURL)
                 DispatchQueue.main.async {
                     cliError = "Failed to run installer"
                 }

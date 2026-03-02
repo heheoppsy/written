@@ -3,3 +3,4 @@
 .claude/
 Package.resolved
 .DS_Store
+Scripts/release.sh

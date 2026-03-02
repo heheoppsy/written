@@ -338,6 +338,10 @@ final class WritingNSTextView: NSTextView {
             } else if (self.string as NSString).length > 0 {
                 self.moveRight(nil)
                 self.moveLeft(nil)
+            } else {
+                // Empty document: re-set selection to force cursor
+                // repositioning after column layout changed the inset.
+                self.setSelectedRange(NSRange(location: 0, length: 0))
             }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }

@@ -88,6 +88,15 @@ struct WritingTextView: NSViewRepresentable {
         context.coordinator.viewModel = viewModel
         context.coordinator.wordCounter = wordCounter
         wordCounter?.getText = { [weak textView] in textView?.string }
+
+        // Register synchronous flush closure for file switching (fixes race condition)
+        viewModel.flushEditorText = { [weak coordinator = context.coordinator] in
+            guard let coordinator else { return "" }
+            coordinator.textSyncTask?.cancel()
+            coordinator.textSyncTask = nil
+            coordinator.syncedGeneration = coordinator.editGeneration
+            return coordinator.textView?.string ?? ""
+        }
         wordCounter?.start()
         textView.onTextChange = { [weak coordinator = context.coordinator] newText in
             guard let coordinator else { return }

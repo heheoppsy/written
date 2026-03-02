@@ -9,10 +9,13 @@ final class WindowFactory: NSObject, NSWindowDelegate {
     private var titleObserver: Any?
     private var quitObserver: Any?
     private var themeObserver: Any?
+    private var dirtyObserver: Any?
+    private var quitSaveObserver: Any?
+    private var quitDiscardObserver: Any?
     /// Set after the user has resolved unsaved work, so re-entrant terminate calls don't double-prompt.
     private var safeToQuit = false
 
-    func ensureWindow(fileURL: URL? = nil, folderURL: URL? = nil, launchOverlay: String? = nil, delegate: AppDelegate) {
+    func ensureWindow(fileURL: URL? = nil, folderURL: URL? = nil, recoveredText: String? = nil, launchOverlay: String? = nil, delegate: AppDelegate) {
         if let existing = mainWindow, existing.isVisible {
             if let fileURL = fileURL {
                 NotificationCenter.default.post(name: .openFileInWindow, object: fileURL)
@@ -28,7 +31,17 @@ final class WindowFactory: NSObject, NSWindowDelegate {
 
         let viewModel: EditorViewModel
 
-        if let fileURL = fileURL {
+        if let recoveredText = recoveredText {
+            if let fileURL = fileURL {
+                // Crash recovery for named file
+                viewModel = EditorViewModel(fileURL: fileURL, recoveredText: recoveredText, folderURL: folderURL)
+                // Pre-load other recovered shadows so they restore on file switch
+                viewModel.loadRemainingRecoveryShadows()
+            } else {
+                // Crash recovery for untitled
+                viewModel = EditorViewModel(recoveredText: recoveredText)
+            }
+        } else if let fileURL = fileURL {
             do {
                 viewModel = try EditorViewModel(fileURL: fileURL)
             } catch {
@@ -39,8 +52,8 @@ final class WindowFactory: NSObject, NSWindowDelegate {
             viewModel = EditorViewModel(folderURL: folderURL)
         }
 
-        let startInEditor = fileURL != nil
-        let showSidebar = folderURL != nil && fileURL == nil
+        let startInEditor = fileURL != nil || recoveredText != nil
+        let showSidebar = folderURL != nil && fileURL == nil && recoveredText == nil
 
         let contentView = MainContentView(
             viewModel: viewModel,
@@ -104,13 +117,30 @@ final class WindowFactory: NSObject, NSWindowDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 guard let self else { return }
                 if self.promptToSaveIfNeeded() {
                     self.safeToQuit = true
                     NSApp.terminate(nil)
                 }
             }
+        }
+
+        // Listen for quit confirmation results from the custom modal
+        quitSaveObserver = NotificationCenter.default.addObserver(
+            forName: .quitConfirmSave,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.completeQuit(saveAll: true) }
+        }
+
+        quitDiscardObserver = NotificationCenter.default.addObserver(
+            forName: .quitConfirmDiscard,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.completeQuit(saveAll: false) }
         }
 
         // Listen for title updates from MainContentView
@@ -124,6 +154,20 @@ final class WindowFactory: NSObject, NSWindowDelegate {
                 if let title { window?.title = title }
             }
         }
+
+        // Track dirty state in the window close button dot
+        dirtyObserver = NotificationCenter.default.addObserver(
+            forName: .documentDirtyChanged,
+            object: nil,
+            queue: .main
+        ) { [weak window] notification in
+            let dirty = notification.object as? Bool ?? false
+            MainActor.assumeIsolated {
+                window?.isDocumentEdited = dirty
+            }
+        }
+        // Apply initial dirty state (the notification may have fired before the observer was registered)
+        window.isDocumentEdited = viewModel.isDirty
 
         // Match title bar appearance to theme (dark/light)
         updateWindowAppearance(window)
@@ -148,50 +192,52 @@ final class WindowFactory: NSObject, NSWindowDelegate {
     // MARK: - Save Prompt
 
     /// Returns true if safe to proceed (no unsaved work, or user saved/discarded).
-    /// Returns false if user cancelled.
+    /// Returns false if user cancelled (or if showing the custom quit modal).
     func promptToSaveIfNeeded() -> Bool {
         if safeToQuit { return true }
 
         guard let vm = viewModel else { return true }
 
-        // Flush any debounced text from the editor to the view model
-        NotificationCenter.default.post(name: .flushEditorText, object: nil)
+        // Synchronous flush from the text view
+        let currentText = vm.flushEditorText?() ?? vm.document.text
+        vm.textDidChange(currentText)
 
-        // File already has a location — flush any pending auto-save
-        if vm.document.fileURL != nil {
-            vm.saveImmediately()
-            return true
+        // No dirty buffers — safe to quit
+        guard vm.hasAnyDirtyBuffers else { return true }
+
+        // Show our custom quit confirmation modal — cancel the quit for now
+        NotificationCenter.default.post(name: .showQuitConfirmation, object: nil)
+        return false
+    }
+
+    /// Called by MainContentView after the user resolves the quit modal.
+    func completeQuit(saveAll: Bool) {
+        guard let vm = viewModel else { return }
+
+        if saveAll {
+            // If current doc is untitled, need save panel
+            if vm.document.fileURL == nil && !vm.document.text.isEmpty {
+                let panel = NSSavePanel()
+                panel.allowedContentTypes = [.plainText]
+                panel.nameFieldStringValue = "Untitled.txt"
+                let saveResponse = panel.runModal()
+                guard saveResponse == .OK, let url = panel.url else { return }
+                vm.assignFile(url: url)
+                RecentItemsService.shared.add(url: url)
+            }
+            do {
+                try vm.saveAllDirtyBuffers()
+            } catch {
+                // Save failed — don't quit. Shadows are still intact as safety net.
+                print("Save failed during quit: \(error)")
+                return
+            }
+        } else {
+            vm.discardAllBuffers()
         }
 
-        guard !vm.document.text.isEmpty else { return true }
-
-        let alert = NSAlert()
-        alert.messageText = "Save your document?"
-        alert.informativeText = "Your changes will be lost if you don't save them."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Don't Save")
-        alert.addButton(withTitle: "Cancel")
-
-        let response = alert.runModal()
-        switch response {
-        case .alertFirstButtonReturn:
-            let ext = "txt"
-            let panel = NSSavePanel()
-            panel.allowedContentTypes = [.plainText]
-            panel.nameFieldStringValue = "Untitled.\(ext)"
-            let saveResponse = panel.runModal()
-            guard saveResponse == .OK, let url = panel.url else { return false }
-            viewModel?.assignFile(url: url)
-            viewModel?.saveImmediately()
-            RecentItemsService.shared.add(url: url)
-            return true
-        case .alertSecondButtonReturn:
-            viewModel?.cleanupTempFile()
-            return true
-        default:
-            return false
-        }
+        safeToQuit = true
+        NSApp.terminate(nil)
     }
 
     // MARK: - NSWindowDelegate
@@ -211,12 +257,15 @@ final class WindowFactory: NSObject, NSWindowDelegate {
 
     nonisolated func windowWillClose(_ notification: Notification) {
         MainActor.assumeIsolated {
-            for observer in [titleObserver, quitObserver, themeObserver] {
+            for observer in [titleObserver, quitObserver, themeObserver, dirtyObserver, quitSaveObserver, quitDiscardObserver] {
                 if let observer { NotificationCenter.default.removeObserver(observer) }
             }
             titleObserver = nil
             quitObserver = nil
             themeObserver = nil
+            dirtyObserver = nil
+            quitSaveObserver = nil
+            quitDiscardObserver = nil
             mainWindow = nil
             viewModel = nil
         }

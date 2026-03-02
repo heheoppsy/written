@@ -311,7 +311,7 @@ struct NewFileNameView: View {
 // MARK: - Modal Button
 
 @MainActor
-private func modalButton(_ key: String, label: String, action: @escaping () -> Void) -> some View {
+func modalButton(_ key: String, label: String, action: @escaping () -> Void) -> some View {
     Button(action: action) {
         HStack(spacing: 4) {
             Text(key)
@@ -337,7 +337,7 @@ private func modalButton(_ key: String, label: String, action: @escaping () -> V
 
 // MARK: - Glass Modifier
 
-private struct SaveModalGlassModifier: ViewModifier {
+struct SaveModalGlassModifier: ViewModifier {
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
             content
