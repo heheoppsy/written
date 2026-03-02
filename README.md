@@ -2,7 +2,7 @@
 
 A distraction-free plaintext writing app for macOS.
 
-![Written screenshot](Screenshots/Written.png)
+![Written](Screenshots/Gifs/Intro.gif)
 
 ## Features
 
@@ -16,6 +16,8 @@ A distraction-free plaintext writing app for macOS.
 - **Sidebar file browser** — navigate, rename, delete, filter, sort
 - **Auto-save** with crash-safe drafts
 - **CLI tool** for quick access from the terminal
+
+See more in [Demos](DEMOS.md).
 
 ## Install
 
