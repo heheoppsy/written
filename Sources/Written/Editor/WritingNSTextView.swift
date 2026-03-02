@@ -532,6 +532,12 @@ final class WritingNSTextView: NSTextView {
         super.keyDown(with: event)
     }
 
+    // MARK: - Paste (strip formatting)
+
+    override func paste(_ sender: Any?) {
+        pasteAsPlainText(sender)
+    }
+
     // MARK: - Context Menu
 
     override func menu(for event: NSEvent) -> NSMenu? {
