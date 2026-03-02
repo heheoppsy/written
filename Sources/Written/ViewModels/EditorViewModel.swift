@@ -177,6 +177,7 @@ final class EditorViewModel: ObservableObject {
         // — Write succeeded — safe to clean up shadows and state —
 
         let modDate = Self.modDate(for: fileURL) ?? Date()
+        bufferStates[fileURL]?.text = _document.text
         bufferStates[fileURL]?.lastDiskModDate = modDate
         bufferStates[fileURL]?.isDirty = false
 
