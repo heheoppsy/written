@@ -205,7 +205,7 @@ struct WelcomeHelpView: View {
     private static let githubURL = URL(string: "https://github.com/heheoppsy/written")!
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1.1"
     }
 
     private var aboutTab: some View {
