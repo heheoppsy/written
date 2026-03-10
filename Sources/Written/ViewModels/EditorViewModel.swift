@@ -343,8 +343,12 @@ final class EditorViewModel: ObservableObject {
         return false
     }
 
-    var dirtyFileURLs: [URL] {
-        bufferStates.filter { $0.value.isDirty }.map { $0.key }
+    var dirtyFileURLs: Set<URL> {
+        var urls = Set(bufferStates.filter { $0.value.isDirty }.map { $0.key })
+        if isDirty, let fileURL = _document.fileURL {
+            urls.insert(fileURL)
+        }
+        return urls
     }
 
     /// Summary of changes for each dirty buffer (for quit confirmation UI).

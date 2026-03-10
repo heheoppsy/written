@@ -11,6 +11,15 @@ cask "written" do
 
   app "Written.app"
 
+  postflight do
+    system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{appdir}/Written.app"]
+  end
+
+  caveats <<~EOS
+    Written is not notarized. The quarantine attribute is removed
+    during installation to prevent macOS from blocking the app.
+  EOS
+
   binary "#{appdir}/Written.app/Contents/MacOS/WrittenCLI", target: "written"
 
   zap trash: [

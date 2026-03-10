@@ -4,6 +4,7 @@ struct SidebarView: View {
     @ObservedObject var viewModel: SidebarViewModel
     let theme: Theme
     let selectedIndex: Int?
+    let dirtyURLs: Set<URL>
     let hideExtensions: Bool
     let renamingURL: URL?
     let deletingURL: URL?
@@ -164,6 +165,7 @@ struct SidebarView: View {
                                             node: node,
                                             theme: theme,
                                             isSelected: selectedIndex == index,
+                                            isDirty: dirtyURLs.contains(node.url),
                                             hideExtension: hideExtensions,
                                             shortcut: shortcuts[node.url],
                                             onTap: { onSelectFile(node.url) },
@@ -190,6 +192,12 @@ struct SidebarView: View {
                             .padding(.horizontal, 8)
                         }
                         .scrollIndicators(.hidden)
+                        .onAppear {
+                            guard let idx = selectedIndex else { return }
+                            let nodes = viewModel.flattenedVisibleNodes
+                            guard idx >= 0, idx < nodes.count else { return }
+                            proxy.scrollTo(nodes[idx].id, anchor: .center)
+                        }
                         .onChange(of: selectedIndex) {
                             guard let idx = selectedIndex else { return }
                             let nodes = viewModel.flattenedVisibleNodes
@@ -303,6 +311,7 @@ private struct FileNodeRow: View {
     let node: FileNode
     let theme: Theme
     let isSelected: Bool
+    var isDirty: Bool = false
     var hideExtension: Bool = false
     var shortcut: Int?
     let onTap: () -> Void
@@ -324,6 +333,12 @@ private struct FileNodeRow: View {
                     .foregroundColor(Color(nsColor: theme.sidebarTextColor))
                     .lineLimit(1)
                     .truncationMode(.middle)
+
+                if isDirty {
+                    Circle()
+                        .fill(Color(nsColor: theme.sidebarTextColor).opacity(0.4))
+                        .frame(width: 5, height: 5)
+                }
 
                 Spacer()
 

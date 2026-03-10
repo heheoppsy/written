@@ -32,6 +32,7 @@ struct WrittenCommands: Commands {
                 let panel = NSOpenPanel()
                 panel.canChooseFiles = true
                 panel.canChooseDirectories = true
+                panel.canCreateDirectories = true
                 panel.allowsMultipleSelection = false
                 panel.begin { response in
                     guard response == .OK, let url = panel.url else { return }

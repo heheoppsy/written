@@ -146,6 +146,7 @@ struct MainContentView: View {
                                 viewModel: sidebarVM,
                                 theme: settings.currentTheme,
                                 selectedIndex: sidebarSelectedIndex,
+                                dirtyURLs: viewModel.dirtyFileURLs,
                                 hideExtensions: settings.hideFileExtensions,
                                 renamingURL: renamingNodeURL,
                                 deletingURL: deletingNodeURL,

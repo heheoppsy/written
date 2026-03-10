@@ -65,6 +65,7 @@ final class WindowFactory: NSObject, NSWindowDelegate {
                 let panel = NSOpenPanel()
                 panel.canChooseFiles = false
                 panel.canChooseDirectories = true
+                panel.canCreateDirectories = true
                 panel.allowsMultipleSelection = false
                 panel.begin { response in
                     guard response == .OK, let url = panel.url else { return }
