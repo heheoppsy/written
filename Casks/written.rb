@@ -1,6 +1,6 @@
 cask "written" do
-  version "1.1.2"
-  sha256 "08cbc073449cb76845bc4ef0141f38422c06adb2109ac725ba049494974c8891"
+  version "1.1.3"
+  sha256 "50b0cccdad5ea3ad4be7553a5986623d22d9a5be8c9052a73d4014596c1ce254"
 
   url "https://github.com/heheoppsy/written/releases/download/v#{version}/Written-#{version}.dmg"
   name "Written"
