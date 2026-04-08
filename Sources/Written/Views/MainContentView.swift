@@ -42,6 +42,7 @@ struct MainContentView: View {
     @State private var externalChangeDiskText: String?
     @State private var showQuitConfirmation = false
     @State private var quitDirtySummaries: [EditorViewModel.DirtyFileSummary] = []
+    @State private var sidebarHadFocusBeforeModal = false
     @State private var fileErrorTitle: String = "Error"
     @State private var fileErrorMessage: String?
     @FocusState private var quitConfirmFocused: Bool
@@ -516,6 +517,7 @@ struct MainContentView: View {
     }
 
     private func handleShowQuitConfirmation() {
+        sidebarHadFocusBeforeModal = sidebarVisible && sidebarFocused
         quitDirtySummaries = viewModel.dirtyFileSummaries()
         showQuitConfirmation = true
     }
@@ -1210,6 +1212,14 @@ struct MainContentView: View {
     }
 
     private func refocusAfterModal() {
+        if sidebarHadFocusBeforeModal && sidebarVisible {
+            sidebarHadFocusBeforeModal = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                sidebarFocused = true
+            }
+            return
+        }
+        sidebarHadFocusBeforeModal = false
         if windowMode == .editor {
             editorNeedsFocus = true
         }

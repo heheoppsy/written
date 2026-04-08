@@ -50,8 +50,10 @@ final class AppSettings: ObservableObject {
     @AppStorage("hasSeenTutorial") var hasSeenTutorial: Bool = false
 
     var currentFontCategory: FontCategory {
-        guard let font = FontManager.catalog.first(where: { $0.id == currentFontName }) else {
-            return .mono // SF Mono default
+        // Empty string represents SF Mono (system category)
+        let lookupName = currentFontName.isEmpty ? "SF-Mono" : currentFontName
+        guard let font = FontManager.catalog.first(where: { $0.id == lookupName }) else {
+            return .mono
         }
         return font.category
     }
